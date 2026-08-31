@@ -147,6 +147,32 @@ backend/
 
 ## Quickstart & Installation
 
+### 🚀 Quickstart for Windows (1-Click Run)
+
+Simply double-click `run.bat` (or `start.bat`) or run from command prompt / PowerShell:
+
+```cmd
+run.bat
+```
+
+This automated script will:
+1. Verify Python and Node.js/npm prerequisites.
+2. Initialize `.env` and `frontend/.env` configuration files.
+3. Install backend (`pip`) and frontend (`npm`) dependencies if needed.
+4. Seed the database with the Kora Retail dataset.
+5. Launch FastAPI backend (`http://localhost:8000`) and Vite frontend (`http://localhost:8080`) in separate processes.
+6. Automatically open the Web UI and Swagger Docs in your browser.
+7. Provide a launcher menu to run tests, re-seed data, or stop all services.
+
+To stop all PayPilot services at any time, run:
+```cmd
+stop.bat
+```
+
+---
+
+### Manual Setup (Cross-Platform)
+
 ### 1. Set Up Virtual Environment
 
 ```bash

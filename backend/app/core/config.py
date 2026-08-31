@@ -18,7 +18,9 @@ class Settings(BaseSettings):
     SUPABASE_SERVICE_ROLE_KEY: str = ""
 
     # CORS
-    ALLOWED_ORIGINS: Union[str, List[str]] = "http://localhost:3000,http://localhost:5173,http://127.0.0.1:3000"
+    ALLOWED_ORIGINS: Union[str, List[str]] = (
+        "http://localhost:3000,http://localhost:5173,http://127.0.0.1:3000,http://localhost:8080,http://127.0.0.1:8080"
+    )
 
     # LLM Configuration
     OPENAI_API_KEY: str = ""
