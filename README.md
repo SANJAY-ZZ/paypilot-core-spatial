@@ -10,39 +10,43 @@ PayPilot enforces strict governance by separating reasoning, strategy formulatio
 
 ```mermaid
 flowchart TD
-    subgraph Data Store
-        DB[(PostgreSQL / Supabase / SQLite)]
+    subgraph DataStore["Data Store"]
+        DB[("PostgreSQL / Supabase / SQLite")]
     end
 
-    subgraph Autonomous Agent Pipeline
-        Scout["1. SCOUT AGENT\nScans transactions & discovers opportunities"]
-        Analyst["2. ANALYST AGENT\nEmpirical revenue & confidence calculations"]
-        LLM["3. REASONING ENGINE (OpenAI / Deterministic Fallback)\nSynthesizes natural language rationale & key drivers"]
-        Strategist["4. STRATEGIST AGENT\nFormulates campaign payload & channel strategy"]
-        Guardian{"5. GUARDIAN AGENT\nDeterministic Policy Gatekeeper"}
-        Executor["6. EXECUTOR AGENT\nRazorpay Adapter + Idempotency"]
-        Razorpay[Razorpay Payment Links / Test Mode]
-        Webhook["7. WEBHOOK LISTENER\nSignature verification & auto-settlement"]
-        Auditor["8. AUDITOR AGENT\nImmutable Event Logging"]
+    subgraph Pipeline["Autonomous Agent Pipeline"]
+        Scout["1. SCOUT AGENT<br/>Scans transactions & discovers opportunities"]
+        Analyst["2. ANALYST AGENT<br/>Empirical revenue & confidence calculations"]
+        LLM["3. REASONING ENGINE (OpenAI / Deterministic Fallback)<br/>Synthesizes natural language rationale & key drivers"]
+        Strategist["4. STRATEGIST AGENT<br/>Formulates campaign payload & channel strategy"]
+        Guardian{"5. GUARDIAN AGENT<br/>Deterministic Policy Gatekeeper"}
+        Executor["6. EXECUTOR AGENT<br/>Razorpay Adapter + Idempotency"]
+        Razorpay["Razorpay Payment Links / Test Mode"]
+        Webhook["7. WEBHOOK LISTENER<br/>Signature verification & auto-settlement"]
+        Auditor["8. AUDITOR AGENT<br/>Immutable Event Logging"]
     end
 
-    subgraph Merchant Interaction
-        UI[Lovable Frontend UI]
-        ApprovalGate{Requires Merchant Sign-off?}
+    subgraph Interaction["Merchant Interaction"]
+        UI["PayPilot Frontend UI"]
+        ApprovalGate{"Requires Merchant Sign-off?"}
     end
 
-    DB --> Scout --> Analyst --> LLM --> Strategist --> Guardian
-    Guardian -->|Exceeds ₹5,000 threshold| ApprovalGate
-    ApprovalGate -->|Merchant Signs Off| Executor
-    Guardian -->|Auto-Approved| Executor
-    Guardian -->|Violates Limit (e.g. >15% Disc)| Auditor
+    DB --> Scout
+    Scout --> Analyst
+    Analyst --> LLM
+    LLM --> Strategist
+    Strategist --> Guardian
+    Guardian -->|"Exceeds Policy Threshold"| ApprovalGate
+    ApprovalGate -->|"Merchant Signs Off"| Executor
+    Guardian -->|"Auto-Approved"| Executor
+    Guardian -->|"Violates Limit (e.g. over 15% Disc)"| Auditor
     Executor --> Razorpay
-    Razorpay -.->|Async Callback| Webhook
+    Razorpay -.->|"Async Callback"| Webhook
     Webhook --> DB
     Executor --> Auditor
     Webhook --> Auditor
     Auditor --> DB
-    UI <-->|REST APIs| DB
+    UI <-->|"REST APIs"| DB
 ```
 
 ---
