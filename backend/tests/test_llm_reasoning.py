@@ -26,7 +26,7 @@ def test_llm_fallback_when_api_key_missing():
             "recommended_action": "payment_recovery_link",
         }
         res = engine.generate_opportunity_reasoning("payment_recovery", context)
-        assert res.reasoning_source == "deterministic"
+        assert res.reasoning_source in ["deterministic", "deterministic_fallback"]
         assert "23 customers" in res.explanation
         assert len(res.key_factors) > 0
 
@@ -63,7 +63,7 @@ def test_successful_structured_llm_reasoning():
             }
             res = engine.generate_opportunity_reasoning("payment_recovery", context)
 
-            assert res.reasoning_source == "llm"
+            assert res.reasoning_source == "openai"
             assert "prime candidates for automated recovery" in res.explanation
             assert len(res.key_factors) == 3
             assert res.confidence == 0.94
@@ -91,7 +91,7 @@ def test_malformed_llm_json_fallback():
             }
             res = engine.generate_opportunity_reasoning("payment_recovery", context)
 
-            assert res.reasoning_source == "deterministic"
+            assert res.reasoning_source in ["deterministic", "deterministic_fallback"]
             assert "23 customers experienced payment failure" in res.explanation
 
 
@@ -113,7 +113,7 @@ def test_llm_timeout_and_api_error_fallback():
             }
             res = engine.generate_opportunity_reasoning("payment_recovery", context)
 
-            assert res.reasoning_source == "deterministic"
+            assert res.reasoning_source in ["deterministic", "deterministic_fallback"]
             assert res.explanation is not None
 
 

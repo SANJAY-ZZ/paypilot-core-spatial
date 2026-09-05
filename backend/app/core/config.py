@@ -22,9 +22,14 @@ class Settings(BaseSettings):
         "http://localhost:3000,http://localhost:5173,http://127.0.0.1:3000,http://localhost:8080,http://127.0.0.1:8080"
     )
 
-    # LLM Configuration
+    # LLM Reasoning Configuration
+    LLM_PROVIDER: str = "ollama"  # "ollama", "openai", or "deterministic"
+    OLLAMA_BASE_URL: str = "http://localhost:11434"
+    OLLAMA_MODEL: str = "gemma4:latest"
+    OLLAMA_TIMEOUT_SECONDS: float = 120.0
+
+    # OpenAI Configuration (Alternative Provider)
     OPENAI_API_KEY: str = ""
-    LLM_PROVIDER: str = "openai"
     LLM_MODEL: str = "gpt-4o-mini"
     LLM_TIMEOUT_SECONDS: float = 8.0
 

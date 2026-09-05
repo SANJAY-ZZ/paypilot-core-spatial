@@ -66,9 +66,13 @@ register_error_handlers(app)
 app.include_router(api_router, prefix=settings.API_PREFIX)
 
 
+from backend.app.services.ollama_service import ollama_service
+from backend.app.services.razorpay_service import get_razorpay_service
+
+
 @app.get("/health", tags=["Health"], status_code=status.HTTP_200_OK)
 def health_check():
-    """System health and database connectivity probe."""
+    """System health, database connectivity, LLM, and Razorpay telemetry probe."""
     db_healthy = False
     try:
         with engine.connect() as conn:
@@ -77,6 +81,29 @@ def health_check():
     except Exception as e:
         logger.error(f"Health check DB probe error: {e}")
 
+    llm_telemetry = {
+        "provider": settings.LLM_PROVIDER,
+        "model": settings.OLLAMA_MODEL if settings.LLM_PROVIDER == "ollama" else settings.LLM_MODEL,
+        "status": "unavailable",
+        "fallback_mode_active": True,
+    }
+
+    if settings.LLM_PROVIDER == "ollama":
+        ollama_status = ollama_service.health_check()
+        llm_telemetry["status"] = ollama_status.get("status", "unavailable")
+        llm_telemetry["model_available"] = ollama_status.get("model_available", False)
+        llm_telemetry["available_models"] = ollama_status.get("available_models", [])
+        llm_telemetry["fallback_mode_active"] = ollama_status.get("status") != "connected"
+    elif settings.LLM_PROVIDER == "openai":
+        llm_telemetry["status"] = "configured" if settings.OPENAI_API_KEY else "unconfigured"
+        llm_telemetry["fallback_mode_active"] = not bool(settings.OPENAI_API_KEY)
+    else:
+        llm_telemetry["status"] = "deterministic_active"
+        llm_telemetry["fallback_mode_active"] = False
+
+    razorpay_service = get_razorpay_service()
+    razorpay_telemetry = razorpay_service.health_check()
+
     return {
         "status": "healthy" if db_healthy else "degraded",
         "service": "PayPilot AI Revenue Engine",
@@ -84,6 +111,8 @@ def health_check():
         "environment": settings.ENVIRONMENT,
         "database_connected": db_healthy,
         "razorpay_mode": settings.RAZORPAY_MODE,
+        "razorpay": razorpay_telemetry,
+        "llm": llm_telemetry,
     }
 
 

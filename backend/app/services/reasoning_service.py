@@ -3,24 +3,21 @@ from typing import Dict, Any, List, Optional
 import json
 import logging
 from pydantic import BaseModel, Field, ValidationError
+
 from backend.app.core.config import settings
+from backend.app.services.ollama_service import (
+    ollama_service,
+    OllamaService,
+    LLMReasoningOutput,
+)
 
 logger = logging.getLogger(__name__)
-
-
-class LLMReasoningOutput(BaseModel):
-    """Strict JSON schema expected from LLM reasoning response."""
-    summary: str = Field(..., description="Human-readable synthesis of why this revenue opportunity exists")
-    key_factors: List[str] = Field(default_factory=list, description="2-4 bullet points highlighting supporting data")
-    recommended_action: str = Field(..., description="Tactical action name or recommendation")
-    confidence: float = Field(..., ge=0.0, le=1.0, description="Model confidence score")
-    risk: str = Field(default="low", description="Risk assessment: low, medium, or high")
 
 
 class ReasoningResult(BaseModel):
     """Standardized output container containing explanation and source attribution."""
     explanation: str
-    reasoning_source: str = "deterministic"  # "llm" or "deterministic"
+    reasoning_source: str = "deterministic"  # "ollama", "openai", or "deterministic_fallback"
     key_factors: List[str] = Field(default_factory=list)
     recommended_action: str
     confidence: float
@@ -159,114 +156,73 @@ class DeterministicReasoningEngine(ReasoningEngine):
         return f"Guardian evaluation completed with status: {decision}."
 
 
-class OpenAIReasoningEngine(ReasoningEngine):
+class OllamaReasoningEngine(ReasoningEngine):
     """
-    OpenAI LLM-based reasoning engine.
+    Ollama LLM reasoning engine.
+    Communicates with local Ollama daemon (e.g. gemma4:latest, qwen3.6:27b).
     Produces rich natural language synthesis and key analytical drivers with automatic
-    fallback to DeterministicReasoningEngine on missing API key, timeouts, or API errors.
+    deterministic fallback on connectivity drop, timeout, or malformed model output.
     """
 
-    def __init__(self, fallback_engine: Optional[ReasoningEngine] = None):
+    def __init__(
+        self,
+        service: Optional[OllamaService] = None,
+        fallback_engine: Optional[ReasoningEngine] = None,
+    ):
+        self.service = service or ollama_service
         self.fallback = fallback_engine or DeterministicReasoningEngine()
 
-    def _sanitize_llm_input(self, opportunity_type: str, context: Dict[str, Any]) -> Dict[str, Any]:
+    def generate_opportunity_reasoning(
+        self, opportunity_type: str, context: Dict[str, Any]
+    ) -> ReasoningResult:
         """
-        Construct a minimal, privacy-safe structural payload for the LLM.
-        Strips all PII, secrets, credentials, and raw database identifiers.
+        Generate structured opportunity reasoning using Ollama with deterministic fallback.
         """
-        evidence_list = []
-        if opportunity_type == "payment_recovery":
-            evidence_list = [
-                f"{context.get('customer_count', 0)} recent failed payments",
-                "Customers have established prior purchasing history",
-                f"Failures occurred within the last {context.get('lookback_hours', 72)} hours",
-            ]
-        elif opportunity_type == "customer_winback":
-            evidence_list = [
-                f"{context.get('customer_count', 0)} lapsed accounts with positive LTV",
-                f"Inactive beyond typical {context.get('dormant_days', 45)}-day reorder cycle",
-            ]
-        elif opportunity_type == "upsell":
-            evidence_list = [
-                f"{context.get('customer_count', 0)} multi-order repeat buyers",
-                f"Propensity score: {context.get('avg_repeat_prob', 0.82)}",
-                f"Catalog match in {context.get('target_category', 'accessories')}",
-            ]
-        else:
-            evidence_list = [
-                f"{context.get('customer_count', 0)} affected subscriber accounts",
-                "Recurring billing mandate drop-off detected",
-            ]
-
-        return {
-            "opportunity_type": opportunity_type,
-            "potential_revenue_inr": float(context.get("potential_revenue", 0.0)),
-            "affected_customers": int(context.get("customer_count", 0)),
-            "model_confidence": float(context.get("confidence", 0.85)),
-            "assessed_risk": str(context.get("risk", "low")),
-            "recommended_action": str(context.get("recommended_action", "payment_recovery_link")),
-            "evidence": evidence_list,
-        }
-
-    def generate_opportunity_reasoning(self, opportunity_type: str, context: Dict[str, Any]) -> ReasoningResult:
-        # Check if API key is present
-        if not settings.OPENAI_API_KEY or settings.LLM_PROVIDER != "openai":
-            logger.info("OpenAI API key not configured. Using deterministic reasoning engine.")
-            return self.fallback.generate_opportunity_reasoning(opportunity_type, context)
-
         try:
-            import openai
-
-            client = openai.OpenAI(
-                api_key=settings.OPENAI_API_KEY,
-                timeout=settings.LLM_TIMEOUT_SECONDS,
+            logger.info(
+                f"Invoking Ollama reasoning engine for opportunity '{opportunity_type}'..."
+            )
+            output: Optional[LLMReasoningOutput] = self.service.analyze_opportunity(
+                opportunity_type=opportunity_type,
+                context=context,
             )
 
-            sanitized_input = self._sanitize_llm_input(opportunity_type, context)
+            if output and output.summary:
+                logger.info(
+                    f"Ollama reasoning generated successfully for '{opportunity_type}' (confidence: {output.confidence:.2f})."
+                )
+                revenue = float(context.get("potential_revenue", 0.0))
+                customer_count = int(context.get("customer_count", 0))
 
-            system_prompt = (
-                "You are PayPilot's AI Analyst Agent for merchant revenue optimization.\n"
-                "Analyze the opportunity metrics and generate a concise, explainable rationale.\n"
-                "Return a valid JSON object strictly matching this schema:\n"
-                "{\n"
-                '  "summary": "1-2 sentence executive summary of why this opportunity exists",\n'
-                '  "key_factors": ["factor 1", "factor 2", "factor 3"],\n'
-                '  "recommended_action": "name of recommended action",\n'
-                '  "confidence": 0.0 to 1.0,\n'
-                '  "risk": "low" | "medium" | "high"\n'
-                "}"
-            )
+                key_factors = output.key_factors
+                if not key_factors:
+                    key_factors = [
+                        f"{customer_count} verified customer accounts in cohort",
+                        f"₹{revenue:,.0f} calculated revenue potential",
+                        f"{int(output.confidence * 100)}% model confidence",
+                    ]
 
-            user_prompt = f"Opportunity Data:\n{json.dumps(sanitized_input, indent=2)}"
-
-            response = client.chat.completions.create(
-                model=settings.LLM_MODEL,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                response_format={"type": "json_object"},
-                temperature=0.2,
-            )
-
-            raw_content = response.choices[0].message.content or "{}"
-            parsed = LLMReasoningOutput.model_validate_json(raw_content)
-
-            return ReasoningResult(
-                explanation=parsed.summary,
-                reasoning_source="llm",
-                key_factors=parsed.key_factors or [
-                    f"{sanitized_input['affected_customers']} customers in cohort",
-                    f"₹{sanitized_input['potential_revenue_inr']:,.0f} revenue potential",
-                ],
-                recommended_action=parsed.recommended_action or sanitized_input["recommended_action"],
-                confidence=parsed.confidence,
-                risk=parsed.risk,
-            )
-
+                return ReasoningResult(
+                    explanation=output.summary,
+                    reasoning_source="ollama",
+                    key_factors=key_factors,
+                    recommended_action=output.recommended_action or str(context.get("recommended_action", "payment_recovery_link")),
+                    confidence=output.confidence,
+                    risk=output.risk,
+                )
+            else:
+                logger.warning(
+                    f"Ollama reasoning returned empty/unusable output. Activating deterministic fallback."
+                )
         except Exception as e:
-            logger.warning(f"LLM reasoning failed ({type(e).__name__}: {str(e)}). Falling back to deterministic engine.")
-            return self.fallback.generate_opportunity_reasoning(opportunity_type, context)
+            logger.warning(
+                f"Ollama reasoning error ({type(e).__name__}: {str(e)}). Activating deterministic fallback."
+            )
+
+        # Execute fallback
+        fallback_result = self.fallback.generate_opportunity_reasoning(opportunity_type, context)
+        fallback_result.reasoning_source = "deterministic_fallback"
+        return fallback_result
 
     def explain_opportunity(self, opportunity_type: str, context: Dict[str, Any]) -> str:
         result = self.generate_opportunity_reasoning(opportunity_type, context)
@@ -279,13 +235,93 @@ class OpenAIReasoningEngine(ReasoningEngine):
         return self.fallback.explain_guardian_decision(decision, policy_violations, context)
 
 
+class OpenAIReasoningEngine(ReasoningEngine):
+    """
+    OpenAI LLM-based reasoning engine (Alternative provider).
+    """
+
+    def __init__(self, fallback_engine: Optional[ReasoningEngine] = None):
+        self.fallback = fallback_engine or DeterministicReasoningEngine()
+
+    def generate_opportunity_reasoning(self, opportunity_type: str, context: Dict[str, Any]) -> ReasoningResult:
+        if not settings.OPENAI_API_KEY:
+            logger.info("OpenAI API key not configured. Using deterministic reasoning engine.")
+            return self.fallback.generate_opportunity_reasoning(opportunity_type, context)
+
+        try:
+            import openai
+
+            client = openai.OpenAI(
+                api_key=settings.OPENAI_API_KEY,
+                timeout=settings.LLM_TIMEOUT_SECONDS,
+            )
+
+            user_prompt = f"Opportunity Data:\n{json.dumps(context, indent=2)}"
+
+            response = client.chat.completions.create(
+                model=settings.LLM_MODEL,
+                messages=[
+                    {"role": "system", "content": "You are PayPilot's AI Analyst. Return JSON matching summary, key_factors, recommended_action, confidence, risk."},
+                    {"role": "user", "content": user_prompt},
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.2,
+            )
+
+            raw_content = response.choices[0].message.content or "{}"
+            parsed = LLMReasoningOutput.model_validate_json(raw_content)
+
+            return ReasoningResult(
+                explanation=parsed.summary,
+                reasoning_source="openai",
+                key_factors=parsed.key_factors,
+                recommended_action=parsed.recommended_action or str(context.get("recommended_action", "")),
+                confidence=parsed.confidence,
+                risk=parsed.risk,
+            )
+
+        except Exception as e:
+            logger.warning(f"OpenAI LLM failed ({type(e).__name__}: {str(e)}). Falling back to deterministic engine.")
+            fallback_res = self.fallback.generate_opportunity_reasoning(opportunity_type, context)
+            fallback_res.reasoning_source = "deterministic_fallback"
+            return fallback_res
+
+    def explain_opportunity(self, opportunity_type: str, context: Dict[str, Any]) -> str:
+        result = self.generate_opportunity_reasoning(opportunity_type, context)
+        return result.explanation
+
+    def explain_recommended_action(self, action_type: str, context: Dict[str, Any]) -> str:
+        return self.fallback.explain_recommended_action(action_type, context)
+
+    def explain_guardian_decision(self, decision: str, policy_violations: List[str], context: Dict[str, Any]) -> str:
+        return self.fallback.explain_guardian_decision(decision, policy_violations, context)
+
+
+class DynamicReasoningEngine(ReasoningEngine):
+    """Dynamic proxy that delegates calls to the currently configured engine based on settings.LLM_PROVIDER."""
+
+    def explain_opportunity(self, opportunity_type: str, context: Dict[str, Any]) -> str:
+        return get_reasoning_engine().explain_opportunity(opportunity_type, context)
+
+    def generate_opportunity_reasoning(self, opportunity_type: str, context: Dict[str, Any]) -> ReasoningResult:
+        return get_reasoning_engine().generate_opportunity_reasoning(opportunity_type, context)
+
+    def explain_recommended_action(self, action_type: str, context: Dict[str, Any]) -> str:
+        return get_reasoning_engine().explain_recommended_action(action_type, context)
+
+    def explain_guardian_decision(self, decision: str, policy_violations: List[str], context: Dict[str, Any]) -> str:
+        return get_reasoning_engine().explain_guardian_decision(decision, policy_violations, context)
+
+
 def get_reasoning_engine() -> ReasoningEngine:
     """Factory to instantiate configured reasoning engine."""
     deterministic = DeterministicReasoningEngine()
-    if settings.OPENAI_API_KEY and settings.LLM_PROVIDER == "openai":
+    if settings.LLM_PROVIDER == "ollama":
+        return OllamaReasoningEngine(service=ollama_service, fallback_engine=deterministic)
+    elif settings.LLM_PROVIDER == "openai" and settings.OPENAI_API_KEY:
         return OpenAIReasoningEngine(fallback_engine=deterministic)
     return deterministic
 
 
-# Global reasoning service instance
-reasoning_service: ReasoningEngine = OpenAIReasoningEngine(fallback_engine=DeterministicReasoningEngine())
+# Global dynamic reasoning service instance
+reasoning_service: ReasoningEngine = DynamicReasoningEngine()

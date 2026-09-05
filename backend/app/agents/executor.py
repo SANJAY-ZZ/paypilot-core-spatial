@@ -1,5 +1,6 @@
 from typing import Dict, Any, Optional
 import time
+import logging
 from sqlalchemy.orm import Session
 from backend.app.models.ai_action import AIAction
 from backend.app.models.merchant import Merchant
@@ -7,11 +8,13 @@ from backend.app.services.razorpay_service import get_razorpay_service
 from backend.app.services.audit_service import audit_service
 from backend.app.core.errors import GuardianBlockedError, ApprovalRequiredError, DuplicateExecutionError
 
+logger = logging.getLogger(__name__)
+
 
 class ExecutorAgent:
     """
     EXECUTOR AGENT:
-    Executes approved financial and recovery actions via the Razorpay service adapter.
+    Executes approved financial and recovery actions via the Razorpay service adapter (Test or Mock Mode).
     Enforces Guardian compliance and idempotency guarantees.
     """
 
@@ -24,9 +27,19 @@ class ExecutorAgent:
         action: AIAction,
         idempotency_key: Optional[str] = None,
     ) -> Dict[str, Any]:
-        # 1. Idempotency Check
+        # 1. Idempotency & Replay Checks
+        # If action has already been executed, return existing result without calling payment gateway again
+        if action.status == "executed" and action.execution_result:
+            logger.info(f"Action '{action.id}' was already executed. Returning existing execution result.")
+            return {
+                "idempotent_replay": True,
+                "action_id": action.id,
+                "status": action.status,
+                "execution_result": action.execution_result,
+                "message": "Action was already successfully executed (idempotent replay).",
+            }
+
         if idempotency_key:
-            # Check if this exact action was already executed with this key
             if action.idempotency_key == idempotency_key and action.status == "executed":
                 return {
                     "idempotent_replay": True,
@@ -51,7 +64,6 @@ class ExecutorAgent:
 
         # 2. Guardian Compliance Verification
         if not action.guardian_result:
-            # If Guardian hasn't evaluated yet, run Guardian evaluation now
             from backend.app.agents.guardian import GuardianAgent
 
             guardian_res = GuardianAgent.evaluate_and_apply(db, action)
@@ -78,14 +90,6 @@ class ExecutorAgent:
                 details={"guardian_result": action.guardian_result},
             )
 
-        if action.status == "executed":
-            return {
-                "idempotent_replay": True,
-                "action_id": action.id,
-                "status": action.status,
-                "execution_result": action.execution_result,
-            }
-
         # 3. Begin Execution Phase
         action.status = "executing"
         db.commit()
@@ -111,43 +115,82 @@ class ExecutorAgent:
 
             if action_type == "payment_recovery_link":
                 amount = float(payload.get("estimated_revenue", 1500.0))
-                # Create mock recovery payment link
+                customer_name = payload.get("customer_name", "Valued Customer")
+                customer_email = payload.get("customer_email", "customer@paypilot.demo")
+                customer_contact = payload.get("customer_contact", "+919876543210")
+                reference_id = f"paypilot_{action.id[-10:]}"
+
+                # Create Razorpay payment link (Test or Mock mode)
                 payment_link = razorpay.create_payment_link(
                     amount=amount,
                     currency=currency,
-                    customer_name="Recovery Customer Cohort",
-                    customer_email="recovery@customer.paypilot.io",
-                    description=f"PayPilot Recovery Link for Action {action.id}",
-                    reference_id=f"paypilot_mock_REC_{action.id[-6:]}",
+                    customer_name=customer_name,
+                    customer_email=customer_email,
+                    customer_contact=customer_contact,
+                    description=f"PayPilot Payment Recovery - Ref #{action.id[-8:].upper()}",
+                    reference_id=reference_id,
+                    notes={
+                        "action_id": action.id,
+                        "opportunity_id": action.opportunity_id or "",
+                        "platform": "PayPilot AI Revenue OS",
+                    },
                 )
+
                 execution_details = {
                     "payment_link_id": payment_link["id"],
                     "short_url": payment_link["short_url"],
                     "reference_id": payment_link["reference_id"],
                     "amount": amount,
+                    "amount_paise": payment_link.get("amount"),
                     "currency": currency,
-                    "channel": payload.get("channel", "Automated Link"),
-                    "dispatched_count": payload.get("customer_count", 1),
+                    "provider": payment_link.get("provider", "razorpay_test"),
+                    "status": payment_link.get("status", "created"),
+                    "mock": payment_link.get("mock", False),
+                    "channel": payload.get("channel", "Automated Razorpay Payment Link"),
+                    "targeted_customers": payload.get("customer_count", 1),
                     "timestamp": int(time.time()),
                 }
 
             elif action_type == "winback_discount_campaign":
                 budget = float(payload.get("campaign_budget", 3500.0))
-                discount = float(payload.get("discount_percent", 12.0))
+                discount = float(payload.get("discount_percent", 10.0))
+                sample_amount = float(payload.get("estimated_revenue", budget))
+                reference_id = f"paypilot_wb_{action.id[-8:]}"
+
+                # Optionally generate a sample win-back checkout link
+                payment_link = razorpay.create_payment_link(
+                    amount=sample_amount,
+                    currency=currency,
+                    customer_name="Win-Back Customer",
+                    customer_email="winback@paypilot.demo",
+                    description=f"PayPilot Win-Back Incentive ({discount:.0f}% Discount Applied)",
+                    reference_id=reference_id,
+                    notes={
+                        "action_id": action.id,
+                        "campaign_type": "winback_discount",
+                        "discount_percent": str(discount),
+                    },
+                )
+
                 execution_details = {
                     "campaign_id": f"cmp_winback_{action.id[-6:]}",
+                    "payment_link_id": payment_link.get("id"),
+                    "short_url": payment_link.get("short_url"),
+                    "reference_id": payment_link.get("reference_id"),
                     "discount_percent": discount,
                     "budget_allocated": budget,
                     "targeted_customers": payload.get("customer_count", 50),
                     "channel": payload.get("channel", "Multi-channel Nudge"),
+                    "provider": payment_link.get("provider", "razorpay_test"),
                     "status": "active_campaign",
                     "timestamp": int(time.time()),
                 }
 
             elif action_type == "smart_upsell_nudge":
+                discount = float(payload.get("discount_percent", 8.0))
                 execution_details = {
                     "upsell_rule_id": f"rule_upsell_{action.id[-6:]}",
-                    "discount_percent": payload.get("discount_percent", 8.0),
+                    "discount_percent": discount,
                     "targeted_customers": payload.get("customer_count", 100),
                     "status": "active_nudge",
                     "timestamp": int(time.time()),
@@ -168,6 +211,12 @@ class ExecutorAgent:
             db.commit()
             db.refresh(action)
 
+            provider_label = execution_details.get("provider", "razorpay")
+            audit_reason = (
+                f"Action '{action.action_type}' executed successfully via {provider_label}. "
+                + (f"Payment Link ID: {execution_details.get('payment_link_id')}" if execution_details.get('payment_link_id') else "")
+            )
+
             # Audit event
             audit_service.record_event(
                 db=db,
@@ -175,7 +224,7 @@ class ExecutorAgent:
                 action_id=action.id,
                 agent=cls.NAME,
                 event_type="EXECUTION_SUCCESS",
-                reason=f"Action '{action.action_type}' executed successfully via Mock Razorpay adapter.",
+                reason=audit_reason.strip(),
                 metadata=execution_details,
             )
 

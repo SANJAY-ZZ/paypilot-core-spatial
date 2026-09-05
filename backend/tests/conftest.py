@@ -9,6 +9,12 @@ from backend.app.core.database import Base, get_db
 from backend.app.main import app
 from backend.app.data.seed import seed_database
 
+from backend.app.core.config import settings
+
+# Ensure test suite runs fast and deterministically without external API dependencies
+settings.LLM_PROVIDER = "deterministic"
+settings.RAZORPAY_MODE = "mock"
+
 # Use in-memory SQLite database with StaticPool for test isolation
 TEST_DATABASE_URL = "sqlite:///:memory:"
 
