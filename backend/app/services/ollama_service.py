@@ -120,7 +120,7 @@ class OllamaService:
         """
         url = f"{self.base_url}/api/tags"
         try:
-            with httpx.Client(timeout=3.0) as client:
+            with httpx.Client(timeout=1.5) as client:
                 resp = client.get(url)
                 if resp.status_code == 200:
                     payload = resp.json()

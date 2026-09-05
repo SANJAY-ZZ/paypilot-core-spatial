@@ -239,9 +239,12 @@ class RazorpayTestService(RazorpayService):
             }
 
         try:
-            client = self._get_client()
-            # Lightweight probe to verify credentials and endpoint reachability
-            resp = client.get(f"{self.BASE_URL}/payment_links?count=1")
+            if self._client is not None:
+                resp = self._client.get(f"{self.BASE_URL}/payment_links?count=1")
+            else:
+                with httpx.Client(auth=(self.key_id, self.key_secret), timeout=1.5) as client:
+                    resp = client.get(f"{self.BASE_URL}/payment_links?count=1")
+
             if resp.status_code == 200:
                 masked_key = f"{self.key_id[:8]}..." if len(self.key_id) > 8 else self.key_id
                 return {
